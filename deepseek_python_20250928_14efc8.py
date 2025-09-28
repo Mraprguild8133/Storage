@@ -1,0 +1,683 @@
+import os
+import logging
+import asyncio
+from typing import Dict, List, Optional
+from datetime import datetime
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
+from telegram.error import TelegramError
+
+from config import Config
+from storage import Storage
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+class FileSharingBot:
+    def __init__(self):
+        self.config = Config()
+        self.storage = Storage()
+        self.application = Application.builder().token(self.config.BOT_TOKEN).build()
+        self.setup_handlers()
+        
+        # Store temporary data for file handling
+        self.temp_data = {}
+
+    def setup_handlers(self):
+        # Command handlers
+        self.application.add_handler(CommandHandler("start", self.start_command))
+        self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("myfiles", self.my_files_command))
+        self.application.add_handler(CommandHandler("broadcast", self.broadcast_command))
+        self.application.add_handler(CommandHandler("delete", self.delete_command))
+        self.application.add_handler(CommandHandler("search", self.search_command))
+        self.application.add_handler(CommandHandler("stats", self.stats_command))
+        self.application.add_handler(CommandHandler("admin", self.admin_command))
+
+        # Message handlers
+        self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        self.application.add_handler(MessageHandler(filters.VIDEO, self.handle_video))
+        self.application.add_handler(MessageHandler(filters.AUDIO, self.handle_audio))
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
+        
+        # Callback query handlers
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^file_"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^page_"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^delete_"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^confirm_"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^cancel_"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern="^admin_"))
+
+    async def start_command(self, update: Update, context: CallbackContext):
+        user = update.effective_user
+        user_id = user.id
+        
+        # Check if it's a deep link for file sharing
+        if context.args:
+            file_id = context.args[0].replace('file_', '')
+            file_data = self.storage.get_file(file_id)
+            
+            if file_data:
+                await self.send_file_to_user(update, context, file_data)
+                return
+        
+        welcome_text = f"""
+👋 **Welcome {user.first_name}!**
+
+🤖 **File Sharing Bot** - Your personal file hosting service
+
+📁 **Supported Files:**
+• Documents (PDF, ZIP, TXT, etc.)
+• Photos (JPEG, PNG, etc.)
+• Videos (MP4, AVI, etc.)
+• Audio files (MP3, etc.)
+
+⚡ **Features:**
+• Permanent file storage
+• Shareable links
+• File management
+• Admin controls
+• No size limits (Telegram limits apply)
+
+📋 **Available Commands:**
+/start - Show this welcome message
+/help - Detailed help guide
+/myfiles - List your uploaded files
+/search - Search your files
+/delete - Remove your files
+
+👨‍💼 **Admin Commands:**
+/stats - Bot statistics
+/broadcast - Send message to all users
+/admin - Admin panel
+
+🚀 **Get Started:** Simply send me any file!
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📤 Upload File", callback_data="upload_help")],
+            [InlineKeyboardButton("📋 My Files", callback_data="page_0")],
+            [InlineKeyboardButton("🆘 Help", callback_data="help")]
+        ]
+        
+        if user_id in self.config.ADMIN_IDS:
+            keyboard.append([InlineKeyboardButton("👨‍💼 Admin Panel", callback_data="admin_panel")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.message:
+            await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        else:
+            await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
+    async def help_command(self, update: Update, context: CallbackContext):
+        help_text = """
+📖 **Help Guide**
+
+📤 **Uploading Files:**
+Simply send any file (document, photo, video, audio) to the bot. 
+You can add a caption to describe your file.
+
+📁 **Managing Files:**
+• Use /myfiles to view all your uploaded files
+• Use /search to find specific files
+• Use /delete to remove files
+
+🔗 **Sharing Files:**
+After uploading, you'll get a shareable link that anyone can use to download the file.
+
+👨‍💼 **Admin Features** (for bot admins):
+• View statistics with /stats
+• Broadcast messages with /broadcast
+• Manage all files in admin panel
+
+⚙️ **Tips:**
+• Files are stored permanently
+• Share links never expire
+• No registration required
+• Fast download speeds
+
+📝 **Examples:**
+• Send a PDF file → Get shareable link
+• Send a photo → Get direct link
+• Send a video → Get streaming link
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Back to Start", callback_data="start")],
+            [InlineKeyboardButton("📤 Upload Now", callback_data="upload_help")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.message:
+            await update.message.reply_text(help_text, reply_markup=reply_markup)
+        else:
+            await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup)
+
+    async def handle_document(self, update: Update, context: CallbackContext):
+        await self.handle_file_upload(update, context, "document")
+
+    async def handle_photo(self, update: Update, context: CallbackContext):
+        await self.handle_file_upload(update, context, "photo")
+
+    async def handle_video(self, update: Update, context: CallbackContext):
+        await self.handle_file_upload(update, context, "video")
+
+    async def handle_audio(self, update: Update, context: CallbackContext):
+        await self.handle_file_upload(update, context, "audio")
+
+    async def handle_text(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        text = update.message.text
+        
+        # Check if user is setting caption for a file
+        if user_id in self.temp_data and 'pending_caption' in self.temp_data[user_id]:
+            file_data = self.temp_data[user_id]['pending_caption']
+            file_data['caption'] = text
+            await self.finalize_file_upload(update, context, file_data)
+            del self.temp_data[user_id]['pending_caption']
+            return
+        
+        await update.message.reply_text("📁 Send me any file to upload and get a shareable link!")
+
+    async def handle_file_upload(self, update: Update, context: CallbackContext, file_type: str):
+        user_id = update.effective_user.id
+        message = update.message
+        
+        try:
+            # Get file information based on type
+            if file_type == "document":
+                file_obj = message.document
+                file_id = file_obj.file_id
+                file_name = file_obj.file_name or "Document"
+                mime_type = file_obj.mime_type or "application/octet-stream"
+            elif file_type == "photo":
+                file_obj = message.photo[-1]
+                file_id = file_obj.file_id
+                file_name = f"photo_{file_id}.jpg"
+                mime_type = "image/jpeg"
+            elif file_type == "video":
+                file_obj = message.video
+                file_id = file_obj.file_id
+                file_name = file_obj.file_name or f"video_{file_id}.mp4"
+                mime_type = getattr(file_obj, 'mime_type', 'video/mp4')
+            elif file_type == "audio":
+                file_obj = message.audio
+                file_id = file_obj.file_id
+                file_name = file_obj.file_name or f"audio_{file_id}.mp3"
+                mime_type = getattr(file_obj, 'mime_type', 'audio/mpeg')
+            else:
+                return
+
+            # Prepare file data
+            file_data = {
+                'file_id': file_id,
+                'name': file_name,
+                'type': file_type,
+                'mime_type': mime_type,
+                'user_id': user_id,
+                'user_name': update.effective_user.first_name,
+                'upload_time': datetime.now().isoformat(),
+                'caption': message.caption or f"Shared via File Bot",
+                'file_size': getattr(file_obj, 'file_size', 0)
+            }
+
+            # Ask for caption if not provided
+            if not message.caption:
+                self.temp_data[user_id] = {'pending_caption': file_data}
+                await message.reply_text(
+                    "📝 Would you like to add a caption for this file? "
+                    "Please send your caption text now, or send '-' to skip."
+                )
+                return
+
+            await self.finalize_file_upload(update, context, file_data)
+
+        except Exception as e:
+            logger.error(f"Error handling file upload: {e}")
+            await message.reply_text("❌ Error uploading file. Please try again.")
+
+    async def finalize_file_upload(self, update: Update, context: CallbackContext, file_data: Dict):
+        user_id = update.effective_user.id
+        message = update.message if update.message else update.callback_query.message
+        
+        try:
+            # Store file data
+            self.storage.add_file(file_data)
+            
+            # Generate shareable link
+            bot_username = (await self.application.bot.get_me()).username
+            share_url = f"https://t.me/{bot_username}?start=file_{file_data['file_id']}"
+            direct_link = await self.get_direct_link(context.bot, file_data)
+            
+            # Prepare response message
+            file_size = self.format_size(file_data.get('file_size', 0))
+            upload_time = datetime.fromisoformat(file_data['upload_time']).strftime("%Y-%m-%d %H:%M:%S")
+            
+            response_text = f"""
+✅ **File Uploaded Successfully!**
+
+📁 **File Name:** `{file_data['name']}`
+📝 **Caption:** {file_data['caption']}
+📊 **Type:** {file_data['type'].title()}
+📦 **Size:** {file_size}
+🕒 **Uploaded:** {upload_time}
+
+🔗 **Shareable Link:**
+`{share_url}`
+
+🌐 **Direct Download:**
+`{direct_link}`
+            """
+            
+            keyboard = [
+                [InlineKeyboardButton("🔗 Share File", url=share_url)],
+                [InlineKeyboardButton("📋 My Files", callback_data="page_0"),
+                 InlineKeyboardButton("🔄 Upload More", callback_data="upload_help")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await message.reply_text(response_text, reply_markup=reply_markup)
+            
+        except Exception as e:
+            logger.error(f"Error finalizing upload: {e}")
+            await message.reply_text("❌ Error processing file. Please try again.")
+
+    async def get_direct_link(self, bot, file_data: Dict) -> str:
+        """Generate direct download link"""
+        try:
+            file = await bot.get_file(file_data['file_id'])
+            return file.file_path
+        except:
+            return "Direct link not available"
+
+    async def my_files_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        await self.show_user_files(update, user_id, 0)
+
+    async def show_user_files(self, update: Update, user_id: int, page: int):
+        user_files = self.storage.get_user_files(user_id)
+        
+        if not user_files:
+            text = "📭 You haven't uploaded any files yet.\n\nSend me a file to get started!"
+            keyboard = [[InlineKeyboardButton("📤 Upload File", callback_data="upload_help")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+            return
+        
+        # Pagination
+        items_per_page = 5
+        start_idx = page * items_per_page
+        end_idx = start_idx + items_per_page
+        page_files = user_files[start_idx:end_idx]
+        
+        text = f"📁 **Your Files**\nPage {page + 1}/{(len(user_files) + items_per_page - 1) // items_per_page}\n\n"
+        
+        keyboard = []
+        for i, file_id in enumerate(page_files, 1):
+            file_data = self.storage.get_file(file_id)
+            if file_data:
+                file_num = start_idx + i
+                text += f"{file_num}. **{file_data['name']}**\n"
+                text += f"   📝 {file_data['caption'][:30]}...\n"
+                text += f"   📊 {self.format_size(file_data.get('file_size', 0))}\n\n"
+                
+                keyboard.append([
+                    InlineKeyboardButton(f"📄 {file_num}", callback_data=f"file_{file_id}"),
+                    InlineKeyboardButton("❌ Delete", callback_data=f"delete_{file_id}")
+                ])
+        
+        # Navigation buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"page_{page-1}"))
+        if end_idx < len(user_files):
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("🏠 Home", callback_data="start")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup)
+
+    async def delete_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        if context.args:
+            file_id = context.args[0]
+            file_data = self.storage.get_file(file_id)
+            
+            if file_data and file_data['user_id'] == user_id:
+                await self.confirm_delete(update, file_data)
+                return
+            else:
+                await update.message.reply_text("❌ File not found or you don't have permission to delete it.")
+                return
+        
+        await self.show_user_files(update, user_id, 0)
+
+    async def search_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        
+        if not context.args:
+            await update.message.reply_text("Usage: /search <filename or caption>")
+            return
+        
+        query = " ".join(context.args).lower()
+        user_files = self.storage.get_user_files(user_id)
+        results = []
+        
+        for file_id in user_files:
+            file_data = self.storage.get_file(file_id)
+            if (query in file_data['name'].lower() or 
+                query in file_data['caption'].lower()):
+                results.append(file_data)
+        
+        if not results:
+            await update.message.reply_text("🔍 No files found matching your search.")
+            return
+        
+        text = f"🔍 **Search Results for '{query}'**\n\n"
+        keyboard = []
+        
+        for i, file_data in enumerate(results, 1):
+            text += f"{i}. **{file_data['name']}**\n"
+            text += f"   📝 {file_data['caption'][:30]}...\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(f"📄 {i}", callback_data=f"file_{file_data['file_id']}"),
+                InlineKeyboardButton("❌ Delete", callback_data=f"delete_{file_data['file_id']}")
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🏠 Home", callback_data="start")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+    async def stats_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        
+        if user_id not in self.config.ADMIN_IDS:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        stats = self.storage.get_stats()
+        
+        text = f"""
+📊 **Bot Statistics**
+
+👥 **Users:** {stats['total_users']}
+📁 **Total Files:** {stats['total_files']}
+💾 **Total Size:** {self.format_size(stats['total_size'])}
+
+📋 **Files by Type:**
+"""
+        for file_type, count in stats['files_by_type'].items():
+            text += f"• {file_type.title()}: {count}\n"
+        
+        text += f"\n🕒 **Last Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        await update.message.reply_text(text)
+
+    async def broadcast_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        
+        if user_id not in self.config.ADMIN_IDS:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        if not context.args:
+            await update.message.reply_text("Usage: /broadcast <message>")
+            return
+        
+        message_text = " ".join(context.args)
+        broadcast_text = f"""
+📢 **Announcement**
+
+{message_text}
+
+---
+_Sent via File Sharing Bot_
+        """
+        
+        sent_count = 0
+        failed_count = 0
+        users = self.storage.get_all_users()
+        
+        progress_msg = await update.message.reply_text("📤 Starting broadcast...")
+        
+        for user_id in users:
+            try:
+                await context.bot.send_message(chat_id=user_id, text=broadcast_text)
+                sent_count += 1
+                
+                # Update progress every 10 messages
+                if sent_count % 10 == 0:
+                    await progress_msg.edit_text(f"📤 Sent to {sent_count} users...")
+                
+                await asyncio.sleep(0.1)  # Rate limiting
+            except Exception as e:
+                failed_count += 1
+        
+        await progress_msg.edit_text(
+            f"📊 **Broadcast Completed!**\n\n"
+            f"✅ Success: {sent_count}\n"
+            f"❌ Failed: {failed_count}\n"
+            f"📨 Total: {sent_count + failed_count}"
+        )
+
+    async def admin_command(self, update: Update, context: CallbackContext):
+        user_id = update.effective_user.id
+        
+        if user_id not in self.config.ADMIN_IDS:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        stats = self.storage.get_stats()
+        
+        text = f"""
+👨‍💼 **Admin Panel**
+
+📊 **Statistics:**
+• Users: {stats['total_users']}
+• Files: {stats['total_files']}
+• Storage: {self.format_size(stats['total_size'])}
+
+⚡ **Quick Actions:**
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
+            [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_menu")],
+            [InlineKeyboardButton("🗑️ Cleanup", callback_data="cleanup_menu")],
+            [InlineKeyboardButton("🏠 Home", callback_data="start")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+    async def send_file_to_user(self, update: Update, context: CallbackContext, file_data: Dict):
+        """Send file to user when they use share link"""
+        try:
+            caption = f"""
+📁 **{file_data['name']}**
+
+{file_data['caption']}
+
+💾 Size: {self.format_size(file_data.get('file_size', 0))}
+🕒 Uploaded: {datetime.fromisoformat(file_data['upload_time']).strftime('%Y-%m-%d')}
+👤 By: {file_data['user_name']}
+
+🔗 Shared via File Sharing Bot
+            """
+            
+            if file_data['type'] == 'document':
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=file_data['file_id'],
+                    caption=caption
+                )
+            elif file_data['type'] == 'photo':
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=file_data['file_id'],
+                    caption=caption
+                )
+            elif file_data['type'] == 'video':
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id,
+                    video=file_data['file_id'],
+                    caption=caption
+                )
+            elif file_data['type'] == 'audio':
+                await context.bot.send_audio(
+                    chat_id=update.effective_chat.id,
+                    audio=file_data['file_id'],
+                    caption=caption
+                )
+                
+        except Exception as e:
+            logger.error(f"Error sending file: {e}")
+            await update.message.reply_text("❌ Error accessing file. It may have been deleted.")
+
+    async def confirm_delete(self, update: Update, file_data: Dict):
+        text = f"""
+🗑️ **Confirm Delete**
+
+Are you sure you want to delete this file?
+
+📁 **File:** {file_data['name']}
+📝 **Caption:** {file_data['caption']}
+
+This action cannot be undone!
+        """
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_{file_data['file_id']}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{file_data['file_id']}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+    async def button_callback(self, update: Update, context: CallbackContext):
+        query = update.callback_query
+        user_id = query.from_user.id
+        data = query.data
+        
+        await query.answer()
+        
+        if data == "start":
+            await self.start_command(update, context)
+        
+        elif data == "help":
+            await self.help_command(update, context)
+        
+        elif data == "upload_help":
+            await query.edit_message_text(
+                "📤 **How to Upload:**\n\n"
+                "1. Send any file (document, photo, video, audio)\n"
+                "2. Add a caption if needed\n"
+                "3. Get your shareable link!\n\n"
+                "Try it now - send me a file!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Back", callback_data="start")]
+                ])
+            )
+        
+        elif data.startswith("page_"):
+            page = int(data.split("_")[1])
+            await self.show_user_files(update, user_id, page)
+        
+        elif data.startswith("file_"):
+            file_id = data.split("_")[1]
+            file_data = self.storage.get_file(file_id)
+            if file_data:
+                await self.send_file_to_user(update, context, file_data)
+        
+        elif data.startswith("delete_"):
+            file_id = data.split("_")[1]
+            file_data = self.storage.get_file(file_id)
+            if file_data and file_data['user_id'] == user_id:
+                await self.confirm_delete(update, file_data)
+        
+        elif data.startswith("confirm_"):
+            file_id = data.split("_")[1]
+            file_data = self.storage.get_file(file_id)
+            
+            if file_data and (file_data['user_id'] == user_id or user_id in self.config.ADMIN_IDS):
+                self.storage.delete_file(file_id)
+                await query.edit_message_text("✅ File deleted successfully!")
+            else:
+                await query.edit_message_text("❌ File not found or no permission to delete.")
+        
+        elif data.startswith("cancel_"):
+            await query.edit_message_text("❌ Deletion cancelled.")
+        
+        elif data == "admin_panel":
+            await self.admin_command(update, context)
+        
+        elif data == "stats":
+            await self.stats_command(update, context)
+        
+        elif data == "broadcast_menu":
+            await query.edit_message_text(
+                "📢 **Broadcast Message**\n\n"
+                "Use /broadcast <message> to send a message to all users.\n\n"
+                "Example:\n"
+                "`/broadcast New features added! Check /help for details.`",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Back to Admin", callback_data="admin_panel")]
+                ])
+            )
+
+    def format_size(self, size_bytes):
+        """Format file size in human readable format"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB"]
+        i = 0
+        while size_bytes >= 1024 and i < len(size_names) - 1:
+            size_bytes /= 1024.0
+            i += 1
+        
+        return f"{size_bytes:.2f} {size_names[i]}"
+
+    def run(self):
+        """Start the bot"""
+        logger.info("Starting File Sharing Bot...")
+        print("🤖 File Sharing Bot is starting...")
+        print("✅ No database required")
+        print("🚀 Bot is ready!")
+        
+        self.application.run_polling()
+
+def main():
+    """Main function to start the bot"""
+    try:
+        bot = FileSharingBot()
+        bot.run()
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        print(f"❌ Error starting bot: {e}")
+
+if __name__ == "__main__":
+    main()
