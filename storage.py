@@ -40,11 +40,11 @@ class Storage:
         except Exception as e:
             print(f"Error saving data: {e}")
     
-    def add_file(self, file_data: Dict):
+    def add_file(self, file_data: Dict) -> bool:
         """Add a new file to storage"""
         try:
             file_id = file_data['file_id']
-            user_id = file_data['user_id']
+            user_id = str(file_data['user_id'])  # Convert to string for JSON compatibility
             
             # Store file data
             self.files[file_id] = file_data
@@ -64,26 +64,39 @@ class Storage:
             self.users[user_id]['last_seen'] = datetime.now().isoformat()
             
             self.save_data()
+            return True
             
         except Exception as e:
             print(f"Error adding file: {e}")
+            return False
     
     def get_file(self, file_id: str) -> Optional[Dict]:
         """Get file data by file_id"""
         return self.files.get(file_id)
     
-    def get_user_files(self, user_id: int) -> List[str]:
-        """Get all file IDs for a user"""
-        if user_id in self.users:
-            return self.users[user_id]['files']
-        return []
+    def get_user_files(self, user_id: int) -> List[Dict]:
+        """Get all file data for a user"""
+        try:
+            user_id_str = str(user_id)
+            if user_id_str in self.users:
+                file_ids = self.users[user_id_str]['files']
+                files = []
+                for file_id in file_ids:
+                    file_data = self.get_file(file_id)
+                    if file_data:
+                        files.append(file_data)
+                return files
+            return []
+        except Exception as e:
+            print(f"Error getting user files: {e}")
+            return []
     
-    def delete_file(self, file_id: str):
+    def delete_file(self, file_id: str) -> bool:
         """Delete a file from storage"""
         try:
             if file_id in self.files:
                 file_data = self.files[file_id]
-                user_id = file_data['user_id']
+                user_id = str(file_data['user_id'])
                 
                 # Remove from user's file list
                 if user_id in self.users and file_id in self.users[user_id]['files']:
@@ -105,8 +118,7 @@ class Storage:
         query = query.lower()
         
         user_files = self.get_user_files(user_id)
-        for file_id in user_files:
-            file_data = self.get_file(file_id)
+        for file_data in user_files:
             if file_data:
                 if (query in file_data['name'].lower() or 
                     query in file_data['caption'].lower()):
@@ -116,27 +128,39 @@ class Storage:
     
     def get_stats(self) -> Dict:
         """Get bot statistics"""
-        total_files = len(self.files)
-        total_users = len(self.users)
-        
-        # Calculate total size and files by type
-        total_size = 0
-        files_by_type = {}
-        
-        for file_id, file_data in self.files.items():
-            file_size = file_data.get('file_size', 0)
-            total_size += file_size
+        try:
+            total_files = len(self.files)
+            total_users = len(self.users)
             
-            file_type = file_data.get('type', 'unknown')
-            files_by_type[file_type] = files_by_type.get(file_type, 0) + 1
-        
-        return {
-            'total_files': total_files,
-            'total_users': total_users,
-            'total_size': total_size,
-            'files_by_type': files_by_type
-        }
+            # Calculate total size and files by type
+            total_size = 0
+            files_by_type = {}
+            
+            for file_id, file_data in self.files.items():
+                file_size = file_data.get('file_size', 0)
+                total_size += file_size
+                
+                file_type = file_data.get('type', 'unknown')
+                files_by_type[file_type] = files_by_type.get(file_type, 0) + 1
+            
+            return {
+                'total_files': total_files,
+                'total_users': total_users,
+                'total_size': total_size,
+                'files_by_type': files_by_type
+            }
+        except Exception as e:
+            print(f"Error getting stats: {e}")
+            return {
+                'total_files': 0,
+                'total_users': 0,
+                'total_size': 0,
+                'files_by_type': {}
+            }
     
     def get_all_users(self) -> List[int]:
         """Get list of all user IDs"""
-        return list(self.users.keys())
+        try:
+            return [int(user_id) for user_id in self.users.keys()]
+        except:
+            return []
