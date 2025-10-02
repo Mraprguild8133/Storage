@@ -15,7 +15,7 @@ class WasabiStorage:
             'region_name': os.getenv('WASABI_REGION', 'us-east-1')
         }
         
-        self.bucket_name = os.getenv('WASABI_BUCKET', 'telegram-file-bot')
+        self.bucket_name = os.getenv('WASABI_BUCKET')
         
         # Initialize S3 client
         self.s3_client = boto3.client('s3', **self.config)
