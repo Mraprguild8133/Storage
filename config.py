@@ -16,6 +16,13 @@ class Config:
         else:
             self.ADMIN_IDS = []  # Default to empty if not set
         
+        # Wasabi Configuration
+        self.WASABI_ACCESS_KEY = os.getenv('WASABI_ACCESS_KEY')
+        self.WASABI_SECRET_KEY = os.getenv('WASABI_SECRET_KEY')
+        self.WASABI_BUCKET = os.getenv('WASABI_BUCKET', 'telegram-file-bot')
+        self.WASABI_REGION = os.getenv('WASABI_REGION', 'us-east-1')
+        self.WASABI_ENDPOINT = os.getenv('WASABI_ENDPOINT', 'https://s3.wasabisys.com')
+        
         # Other configuration options
         self.MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
         self.SUPPORTED_TYPES = ['document', 'photo', 'video', 'audio']
