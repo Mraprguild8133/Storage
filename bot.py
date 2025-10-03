@@ -3,6 +3,7 @@ import time
 import math
 import asyncio
 import logging
+import base64  # Missing import
 from functools import wraps
 from urllib.parse import quote
 
@@ -96,24 +97,26 @@ def humanbytes(size):
 
 def get_file_extension(filename):
     """Extract file extension in lowercase."""
-    return os.path.splitext(filename)[1].lower()SUPPORTED_VIDEO_FORMATS
+    return os.path.splitext(filename)[1].lower()  # Fixed: Removed incorrect SUPPORTED_VIDEO_FORMATS
 
 def is_video_file(filename):
     """Check if file is a supported video format."""
     return get_file_extension(filename) in SUPPORTED_VIDEO_FORMATS
 
 def get_file_type(filename):
-    ext = os.path.splitext(filename)[1].lower()
-    for file_type, extensions in SUPPORTED_VIDEO_FORMATS.items():
-        if ext in extensions:
-            return file_type
+    """Determine file type based on extension."""
+    ext = get_file_extension(filename)
+    if ext in SUPPORTED_VIDEO_FORMATS:
+        return 'video'
+    # Add more file type mappings as needed
     return 'other'
 
 def generate_player_url(filename, presigned_url):
+    """Generate player URL for supported file types."""
     if not RENDER_URL:
         return None
     file_type = get_file_type(filename)
-    if file_type in ['video', 'audio', 'image']:
+    if file_type == 'video':
         encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
         return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
     return None
@@ -168,7 +171,7 @@ async def upload_to_wasabi(file_path, file_name, status_message):
                 
                 def __call__(self, bytes_amount):
                     self.uploaded += bytes_amount
-                    # Schedule progress update in the main thread
+                    # Use thread-safe coroutine execution
                     asyncio.run_coroutine_threadsafe(
                         progress_callback(
                             self.uploaded, 
@@ -181,6 +184,7 @@ async def upload_to_wasabi(file_path, file_name, status_message):
             
             progress_tracker = ProgressTracker()
             
+            # Upload file using threads
             await loop.run_in_executor(
                 None,
                 lambda: s3_client.upload_file(
@@ -347,10 +351,10 @@ async def file_handler(client: Client, message: Message):
         # 3. Generate a pre-signed URL (valid for 7 days)
         presigned_url = await generate_presigned_url(safe_filename)
         
-        # 4. Generate Render player URL for video files
+        # 4. Generate player URL for video files - FIXED: using correct function name
         player_url = None
-        if is_video_file(file_name):
-            player_url = generate_render_player_url(safe_filename)
+        if is_video_file(file_name) and presigned_url:
+            player_url = generate_player_url(safe_filename, presigned_url)  # Fixed function name
         
         # 5. Prepare final message
         if presigned_url:
@@ -404,13 +408,17 @@ async def player_url_handler(client: Client, message: Message):
             s3_client.head_object(Bucket=WASABI_BUCKET, Key=filename)
             
             if is_video_file(filename):
-                player_url = generate_render_player_url(filename)
-                await message.reply_text(
-                    f"🎥 **Player URL for `{filename}`**\n\n"
-                    f"{player_url}\n\n"
-                    f"*This URL allows direct video streaming in browsers*",
-                    disable_web_page_preview=False
-                )
+                presigned_url = await generate_presigned_url(filename)
+                if presigned_url:
+                    player_url = generate_player_url(filename, presigned_url)  # Fixed function name
+                    await message.reply_text(
+                        f"🎥 **Player URL for `{filename}`**\n\n"
+                        f"{player_url}\n\n"
+                        f"*This URL allows direct video streaming in browsers*",
+                        disable_web_page_preview=False
+                    )
+                else:
+                    await message.reply_text("❌ Could not generate presigned URL for the file.")
             else:
                 await message.reply_text(
                     f"⚠️ `{filename}` is not a supported video format.\n"
