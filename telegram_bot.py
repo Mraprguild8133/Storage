@@ -1,6 +1,8 @@
 import logging
+import os
 from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery
+from pyrogram.errors import SessionPasswordNeeded
 from config import config
 from wasabi_client import wasabi_client
 from database import db
@@ -20,11 +22,16 @@ logger = logging.getLogger(__name__)
 
 class TelegramFileBot:
     def __init__(self):
+        # Check if session file exists, if not we'll create it
+        self.session_name = "file_bot_session"
+        
         self.app = Client(
-            "file_bot",
+            self.session_name,
             api_id=config.API_ID,
             api_hash=config.API_HASH,
-            bot_token=config.BOT_TOKEN
+            bot_token=config.BOT_TOKEN,
+            workers=100,
+            sleep_threshold=60
         )
         self.setup_handlers()
     
@@ -115,7 +122,8 @@ class TelegramFileBot:
             url_result = await wasabi_client.generate_presigned_url(file_info['wasabi_key'])
             
             if url_result['success']:
-                web_url = f"https://player.example.com/?url={url_result['url']}"  # Replace with your web player
+                # Simple HTML player URL (you can replace with your own web player)
+                web_url = f"https://player.url.net/?url={url_result['url']}"
                 await message.reply(
                     f"🌐 **Web Player**\n\n"
                     f"Click below to open web player:\n{web_url}",
@@ -249,16 +257,22 @@ class TelegramFileBot:
         """Start the bot"""
         logger.info("Starting Telegram File Bot...")
         
-        # Test Wasabi connection
+        # Test Wasabi connection first
+        logger.info("Testing Wasabi connection...")
         test_result = await wasabi_client.test_connection()
         if test_result['success']:
             logger.info("✅ Wasabi connection successful")
         else:
             logger.error(f"❌ Wasabi connection failed: {test_result['error']}")
+            return
         
         # Start the bot
+        logger.info("Starting Telegram bot...")
         await self.app.start()
-        logger.info("Bot started successfully!")
+        
+        # Get bot info to confirm it's working
+        me = await self.app.get_me()
+        logger.info(f"✅ Bot started successfully as: {me.first_name} (@{me.username})")
         
         # Keep the bot running
         await self.app.idle()
