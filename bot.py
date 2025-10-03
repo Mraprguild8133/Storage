@@ -1,35 +1,19 @@
-# main.py
-# Main entry point for the Telegram File Bot.
-
 import asyncio
 import logging
-from bot import app
-from config import config 
-# Configure basic logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-LOGGER = logging.getLogger(__name__)
+from telegram_bot import TelegramFileBot
 
 async def main():
-    """Starts the bot client and runs it indefinitely."""
-    LOGGER.info("Bot starting...")
+    """Main function to start the bot"""
     try:
-        await app.start()
-        LOGGER.info("Bot is running!")
-        # Keep the main coroutine alive
-        await asyncio.Event().wait()
+        bot = TelegramFileBot()
+        await bot.start()
+    except KeyboardInterrupt:
+        print("\nBot stopped by user")
     except Exception as e:
-        LOGGER.critical(f"Bot exited with a critical error: {e}")
+        logging.error(f"Bot error: {e}")
     finally:
-        await app.stop()
-        LOGGER.info("Bot stopped.")
+        if 'bot' in locals():
+            await bot.stop()
 
 if __name__ == "__main__":
-    try:
-        # Import handlers to ensure they are registered with the client
-        from bot import handlers
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        LOGGER.info("Bot stopped by user.")
+    asyncio.run(main())
