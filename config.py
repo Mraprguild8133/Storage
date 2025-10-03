@@ -1,31 +1,32 @@
-import os
+# config.py
+# Handles loading and validating environment variables.
 
-class Config:
-    def __init__(self):
-        # Bot Token from environment variable (required for Render)
-        self.BOT_TOKEN = os.getenv('BOT_TOKEN')
-        
-        if not self.BOT_TOKEN:
-            raise ValueError("❌ BOT_TOKEN environment variable is required!")
-        
-        # Admin IDs - replace with your Telegram user ID
-        # Get your user ID from @userinfobot on Telegram
-        admin_ids = os.getenv('ADMIN_IDS', '')  # Comma-separated list
-        if admin_ids:
-            self.ADMIN_IDS = [int(id.strip()) for id in admin_ids.split(',')]
-        else:
-            self.ADMIN_IDS = []  # Default to empty if not set
-        
-        # Wasabi Configuration
-        self.WASABI_ACCESS_KEY = os.getenv('WASABI_ACCESS_KEY')
-        self.WASABI_SECRET_KEY = os.getenv('WASABI_SECRET_KEY')
-        self.WASABI_BUCKET = os.getenv('WASABI_BUCKET', 'telegram-file-bot')
-        self.WASABI_REGION = os.getenv('WASABI_REGION', 'us-east-1')
-        self.WASABI_ENDPOINT = os.getenv('WASABI_ENDPOINT', 'https://s3.wasabisys.com')
-        
-        # Other configuration options
-        self.MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-        self.SUPPORTED_TYPES = ['document', 'photo', 'video', 'audio']
-        
-        # Render-specific settings
-        self.PORT = int(os.getenv('PORT', 10000))
+import os
+import logging
+
+LOGGER = logging.getLogger(__name__)
+
+# Load environment variables from the system
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
+WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
+WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
+WASABI_REGION = os.environ.get("WASABI_REGION")
+
+# --- Validation ---
+# A list of variables that are essential for the bot to run
+REQUIRED_VARS = [
+    "API_ID", "API_HASH", "BOT_TOKEN", "WASABI_ACCESS_KEY",
+    "WASABI_SECRET_KEY", "WASABI_BUCKET", "WASABI_REGION"
+]
+
+# Check for any missing essential variables
+missing_vars = [var for var in REQUIRED_VARS if not globals().get(var)]
+
+if missing_vars:
+    error_message = f"Missing required environment variables: {', '.join(missing_vars)}"
+    LOGGER.critical(error_message)
+    # This will stop the bot from starting if a critical variable is missing
+    raise ValueError(error_message)
