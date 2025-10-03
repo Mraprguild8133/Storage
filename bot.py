@@ -4,6 +4,7 @@ import math
 import asyncio
 import logging
 from functools import wraps
+from urllib.parse import quote
 
 import boto3
 from botocore.exceptions import ClientError
@@ -27,6 +28,10 @@ WASABI_SECRET_KEY = config.WASABI_SECRET_KEY
 WASABI_BUCKET = config.WASABI_BUCKET
 WASABI_REGION = config.WASABI_REGION
 ADMIN_ID = config.ADMIN_ID
+
+# Player URL configuration
+PLAYER_BASE_URL = getattr(config, 'PLAYER_BASE_URL', 'https://player.wasabi.com')  # Customize this
+SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp'}
 
 # In-memory storage for authorized user IDs. Starts with the admin.
 # For persistence, consider using a database or a file.
@@ -88,6 +93,19 @@ def humanbytes(size):
         size /= power
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
+
+def get_file_extension(filename):
+    """Extract file extension in lowercase."""
+    return os.path.splitext(filename)[1].lower()
+
+def is_video_file(filename):
+    """Check if file is a supported video format."""
+    return get_file_extension(filename) in SUPPORTED_VIDEO_FORMATS
+
+def generate_player_url(file_key, base_url=PLAYER_BASE_URL):
+    """Generate player URL for video files."""
+    encoded_key = quote(file_key)
+    return f"{base_url}/?file={encoded_key}"
 
 # --- Progress Callback Management ---
 last_update_time = {}
@@ -198,8 +216,34 @@ async def start_handler(client: Client, message: Message):
     await message.reply_text(
         f"👋 Welcome!\n\nThis bot can upload files to Wasabi storage.\n"
         f"Your User ID is: `{message.from_user.id}`\n\n"
-        "Send me any file if you are an authorized user."
+        "Send me any file if you are an authorized user.\n\n"
+        "**Features:**\n"
+        "• Direct download links\n"
+        "• Video player URLs for streaming\n"
+        "• Progress tracking\n"
+        "• 7-day link validity"
     )
+
+@app.on_message(filters.command("help"))
+async def help_handler(client: Client, message: Message):
+    help_text = """
+🤖 **Wasabi Upload Bot Help**
+
+**For Users:**
+• Just send any file to upload
+• Get direct download links
+• Video files get player URLs for streaming
+
+**For Admin:**
+• `/adduser <user_id>` - Add authorized user
+• `/removeuser <user_id>` - Remove user
+• `/listusers` - Show authorized users
+• `/stats` - Bot statistics
+
+**Supported Video Formats:**
+MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, 3GP
+"""
+    await message.reply_text(help_text)
 
 @app.on_message(filters.command("adduser"))
 @is_admin
@@ -242,7 +286,8 @@ async def stats_handler(client: Client, message: Message):
         f"• Authorized users: {len(ALLOWED_USERS)}\n"
         f"• Wasabi connected: {'✅' if s3_client else '❌'}\n"
         f"• Bucket: {WASABI_BUCKET}\n"
-        f"• Region: {WASABI_REGION}"
+        f"• Region: {WASABI_REGION}\n"
+        f"• Player URL: {PLAYER_BASE_URL}"
     )
     await message.reply_text(stats_text)
 
@@ -288,38 +333,89 @@ async def file_handler(client: Client, message: Message):
         # 3. Generate a pre-signed URL (valid for 7 days)
         presigned_url = await generate_presigned_url(safe_filename)
         
+        # 4. Generate player URL for video files
+        player_url = None
+        if is_video_file(file_name):
+            player_url = generate_player_url(safe_filename)
+        
+        # 5. Prepare final message
         if presigned_url:
             final_message = (
                 f"✅ **File Uploaded Successfully!**\n\n"
                 f"**File:** `{file_name}`\n"
                 f"**Size:** {humanbytes(file_size)}\n"
                 f"**Stored as:** `{safe_filename}`\n"
-                f"**Link (valid for 7 days):**\n"
-                f"{presigned_url}"
+                f"**Direct Link (7 days):**\n`{presigned_url}`\n"
             )
-            await status_message.edit_text(final_message, disable_web_page_preview=True)
+            
+            # Add player URL for videos
+            if player_url:
+                final_message += f"\n**🎥 Player URL:**\n{player_url}"
+            
+            await status_message.edit_text(final_message, disable_web_page_preview=False)
         else:
-            await status_message.edit_text(
+            error_message = (
                 f"✅ **File Uploaded Successfully!**\n\n"
                 f"**File:** `{file_name}`\n"
                 f"**Size:** {humanbytes(file_size)}\n"
                 f"**Stored as:** `{safe_filename}`\n"
                 f"⚠️ *Could not generate shareable link*"
             )
+            if player_url:
+                error_message += f"\n\n**🎥 Player URL:**\n{player_url}"
+            
+            await status_message.edit_text(error_message, disable_web_page_preview=False)
 
     except Exception as e:
         logger.error(f"An error occurred during file processing: {e}", exc_info=True)
         await status_message.edit_text(f"❌ **Upload failed:**\n`{str(e)}`")
     finally:
-        # 4. Cleanup
+        # 6. Cleanup
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"Cleaned up local file: {file_path}")
         if status_message.id in last_update_time:
              del last_update_time[status_message.id]
 
+# --- Player URL Generation Command ---
+@app.on_message(filters.command("player"))
+@is_authorized
+async def player_url_handler(client: Client, message: Message):
+    """Generate player URL for existing files in Wasabi"""
+    try:
+        filename = message.text.split(" ", 1)[1].strip()
+        
+        # Check if file exists in Wasabi
+        try:
+            s3_client.head_object(Bucket=WASABI_BUCKET, Key=filename)
+            
+            if is_video_file(filename):
+                player_url = generate_player_url(filename)
+                await message.reply_text(
+                    f"🎥 **Player URL for `{filename}`**\n\n"
+                    f"{player_url}\n\n"
+                    f"*This URL allows direct video streaming in browsers*",
+                    disable_web_page_preview=False
+                )
+            else:
+                await message.reply_text(
+                    f"⚠️ `{filename}` is not a supported video format.\n"
+                    f"Supported formats: {', '.join(SUPPORTED_VIDEO_FORMATS)}"
+                )
+                
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                await message.reply_text(f"❌ File `{filename}` not found in Wasabi storage.")
+            else:
+                await message.reply_text(f"❌ Error accessing file: {e.response['Error']['Message']}")
+                
+    except IndexError:
+        await message.reply_text("⚠️ **Usage:** /player `<filename>`\nExample: `/player 1234567890_myvideo.mp4`")
+
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Bot is starting...")
+    logger.info(f"Player base URL: {PLAYER_BASE_URL}")
+    logger.info(f"Supported video formats: {SUPPORTED_VIDEO_FORMATS}")
     app.run()
     logger.info("Bot has stopped.")
