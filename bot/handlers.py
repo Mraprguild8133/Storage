@@ -7,6 +7,7 @@ import logging
 from uuid import uuid4
 import asyncio
 
+from config import config 
 from pyrogram import filters
 from pyrogram.types import (
     InlineKeyboardButton,
