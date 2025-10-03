@@ -4,6 +4,7 @@ import math
 import asyncio
 import logging
 import mimetypes
+import hashlib
 from functools import wraps
 from urllib.parse import quote, urlparse
 
@@ -51,7 +52,6 @@ STREAMING_DOMAINS = {
         f"https://s3.eu-central-1.wasabisys.com/{WASABI_BUCKET}",
         f"https://{WASABI_BUCKET}.s3.eu-central-1.wasabisys.com"
     ],
-    # Add more regions as needed
 }
 
 # Fallback domains if region not found
@@ -61,6 +61,9 @@ DEFAULT_STREAMING_DOMAINS = [
 ]
 
 ALLOWED_USERS = {ADMIN_ID}
+
+# Store file information for callback handling
+file_store = {}
 
 # --- Bot & Wasabi Client Initialization ---
 app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -141,11 +144,7 @@ def generate_direct_links(filename):
     
     direct_links = []
     for domain in domains:
-        # Handle both path-style and virtual-hosted-style URLs
-        if domain.endswith(WASABI_BUCKET):
-            direct_link = f"{domain}/{encoded_filename}"
-        else:
-            direct_link = f"{domain}/{encoded_filename}"
+        direct_link = f"{domain}/{encoded_filename}"
         direct_links.append(direct_link)
     
     return direct_links
@@ -161,14 +160,14 @@ def generate_online_player_links(filename, file_type):
     
     if file_type == 'video':
         players = {
-            "🎬 Built-in Player": f"https://player.example.com/?url={quote(direct_url)}",  # Replace with your player
+            "🎬 Direct Play": direct_url,
             "📱 VLC": f"vlc://{direct_url}",
-            "🔗 Direct Link": direct_url,
+            "🔗 Download": direct_url,
         }
     elif file_type == 'audio':
         players = {
-            "🎵 Web Player": f"https://audio-player.example.com/?url={quote(direct_url)}",  # Replace with your player
-            "🎧 Direct Audio": direct_url,
+            "🎵 Direct Play": direct_url,
+            "🔗 Download": direct_url,
         }
     elif file_type == 'image':
         players = {
@@ -176,13 +175,17 @@ def generate_online_player_links(filename, file_type):
         }
     elif file_type == 'document':
         players = {
-            "📄 Google Docs": f"https://docs.google.com/viewer?url={quote(direct_url)}",
-            "🔗 Direct Download": direct_url,
+            "📄 View Online": direct_url,
+            "🔗 Download": direct_url,
         }
     
     return players
 
-def create_streaming_keyboard(filename, file_type):
+def generate_file_hash(filename):
+    """Generate short hash for callback data"""
+    return hashlib.md5(filename.encode()).hexdigest()[:8]
+
+def create_streaming_keyboard(file_hash, filename, file_type):
     """Create inline keyboard with streaming options"""
     players = generate_online_player_links(filename, file_type)
     keyboard = []
@@ -190,13 +193,8 @@ def create_streaming_keyboard(filename, file_type):
     for player_name, player_url in players.items():
         keyboard.append([InlineKeyboardButton(player_name, url=player_url)])
     
-    # Add download button
-    direct_links = generate_direct_links(filename)
-    if direct_links:
-        keyboard.append([InlineKeyboardButton("⬇️ Direct Download", url=direct_links[0])])
-    
-    # Add copy links button
-    keyboard.append([InlineKeyboardButton("📋 Copy All Links", callback_data=f"copy_links_{filename}")])
+    # Add copy links button with short hash
+    keyboard.append([InlineKeyboardButton("📋 Copy All Links", callback_data=f"links_{file_hash}")])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -304,14 +302,21 @@ async def generate_presigned_url(file_name):
         return None
 
 # --- Callback Query Handler ---
-@app.on_callback_query(filters.regex(r"^copy_links_"))
+@app.on_callback_query(filters.regex(r"^links_"))
 async def copy_links_callback(client, callback_query):
     """Handle copy links callback"""
-    filename = callback_query.data.replace("copy_links_", "")
-    file_type = is_streamable_file(filename)
+    file_hash = callback_query.data.replace("links_", "")
     
-    if not file_type:
-        await callback_query.answer("File type not supported for streaming", show_alert=True)
+    # Find filename from stored data
+    filename = None
+    for stored_hash, stored_data in file_store.items():
+        if stored_hash == file_hash:
+            filename = stored_data.get('filename')
+            file_type = stored_data.get('file_type')
+            break
+    
+    if not filename:
+        await callback_query.answer("File information not found or expired", show_alert=True)
         return
     
     direct_links = generate_direct_links(filename)
@@ -321,7 +326,7 @@ async def copy_links_callback(client, callback_query):
     
     # Add direct links
     links_text += "**Direct Links:**\n"
-    for i, link in enumerate(direct_links, 1):
+    for i, link in enumerate(direct_links[:3], 1):  # Limit to 3 links
         links_text += f"{i}. `{link}`\n"
     
     # Add player links
@@ -329,25 +334,18 @@ async def copy_links_callback(client, callback_query):
     for player_name, player_url in players.items():
         links_text += f"• {player_name}: `{player_url}`\n"
     
-    # Send as a separate message (Telegram has message length limits)
-    if len(links_text) > 4000:
-        # Split long messages
-        part1 = links_text[:4000]
-        part2 = links_text[4000:]
-        await callback_query.message.reply_text(part1)
-        await callback_query.message.reply_text(part2)
-    else:
+    # Clean up old stored data (keep only last 100 entries)
+    if len(file_store) > 100:
+        oldest_key = next(iter(file_store))
+        del file_store[oldest_key]
+    
+    try:
+        # Send as a separate message
         await callback_query.message.reply_text(links_text)
-    
-    await callback_query.answer("Links sent in chat!")
-    
-    # Edit original message to show links were copied
-    original_text = callback_query.message.text
-    if "Upload complete" in original_text:
-        await callback_query.message.edit_text(
-            original_text + "\n\n✅ **Links copied to chat!**",
-            reply_markup=callback_query.message.reply_markup
-        )
+        await callback_query.answer("📋 Links sent in chat!")
+    except Exception as e:
+        logger.error(f"Failed to send links: {e}")
+        await callback_query.answer("❌ Failed to send links", show_alert=True)
 
 # --- Bot Command Handlers ---
 @app.on_message(filters.command("start"))
@@ -425,6 +423,7 @@ async def stats_handler(client: Client, message: Message):
         f"• Bucket: {WASABI_BUCKET}\n"
         f"• Region: {WASABI_REGION}\n"
         f"• Streaming domains: {len(domains)}\n"
+        f"• Stored files: {len(file_store)}\n"
         f"• Storage: Wasabi Cloud"
     )
     await message.reply_text(stats_text)
@@ -440,20 +439,20 @@ async def file_handler(client: Client, message: Message):
     # Get file information
     if message.document:
         media = message.document
+        file_name = media.file_name
     elif message.video:
         media = message.video
+        file_name = media.file_name or f"video_{int(time.time())}.mp4"
     elif message.audio:
         media = message.audio
+        file_name = media.file_name or f"audio_{int(time.time())}.mp3"
     elif message.photo:
         media = message.photo
-        # Photos don't have filename, create one
         file_name = f"photo_{int(time.time())}.jpg"
     else:
         await message.reply_text("❌ Unsupported file type.")
         return
 
-    if not message.photo:
-        file_name = media.file_name
     file_size = media.file_size
     
     # Check file size limit
@@ -487,9 +486,16 @@ async def file_handler(client: Client, message: Message):
         file_type = is_streamable_file(file_name)
         
         if file_type:
-            # Generate streaming links and online player options
-            direct_links = generate_direct_links(safe_filename)
-            players = generate_online_player_links(safe_filename, file_type)
+            # Generate file hash for callback data
+            file_hash = generate_file_hash(safe_filename)
+            
+            # Store file information
+            file_store[file_hash] = {
+                'filename': safe_filename,
+                'original_name': file_name,
+                'file_type': file_type,
+                'timestamp': time.time()
+            }
             
             # Create message with streaming options
             stream_message = (
@@ -499,11 +505,11 @@ async def file_handler(client: Client, message: Message):
                 f"**Size:** {humanbytes(file_size)}\n"
                 f"**Stored as:** `{safe_filename}`\n\n"
                 f"**Streaming Ready!** 🌐\n"
-                f"Choose your preferred player below:"
+                f"Choose your preferred option below:"
             )
             
             # Create inline keyboard with streaming options
-            keyboard = create_streaming_keyboard(safe_filename, file_type)
+            keyboard = create_streaming_keyboard(file_hash, safe_filename, file_type)
             
             await status_message.edit_text(stream_message, reply_markup=keyboard)
             
@@ -540,9 +546,31 @@ async def file_handler(client: Client, message: Message):
         if status_message.id in last_update_time:
              del last_update_time[status_message.id]
 
+# --- Cleanup Task ---
+async def cleanup_file_store():
+    """Periodically clean up old file store entries"""
+    while True:
+        await asyncio.sleep(3600)  # Run every hour
+        current_time = time.time()
+        expired_entries = []
+        
+        for file_hash, file_data in file_store.items():
+            if current_time - file_data['timestamp'] > 24 * 3600:  # 24 hours
+                expired_entries.append(file_hash)
+        
+        for file_hash in expired_entries:
+            del file_store[file_hash]
+        
+        if expired_entries:
+            logger.info(f"Cleaned up {len(expired_entries)} expired file store entries")
+
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Bot is starting...")
     logger.info(f"Streaming domains configured for region: {WASABI_REGION}")
+    
+    # Start cleanup task
+    asyncio.create_task(cleanup_file_store())
+    
     app.run()
     logger.info("Bot has stopped.")
