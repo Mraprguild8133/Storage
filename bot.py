@@ -30,7 +30,7 @@ WASABI_REGION = config.WASABI_REGION
 ADMIN_ID = config.ADMIN_ID
 
 # Player URL configuration - Using Render URL
-PLAYER_BASE_URL = getattr(config, 'PLAYER_BASE_URL', 'https://your-video-player-app.onrender.com')
+RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
 SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpeg', '.mpg'}
 
 # In-memory storage for authorized user IDs. Starts with the admin.
@@ -96,17 +96,27 @@ def humanbytes(size):
 
 def get_file_extension(filename):
     """Extract file extension in lowercase."""
-    return os.path.splitext(filename)[1].lower()
+    return os.path.splitext(filename)[1].lower()SUPPORTED_VIDEO_FORMATS
 
 def is_video_file(filename):
     """Check if file is a supported video format."""
     return get_file_extension(filename) in SUPPORTED_VIDEO_FORMATS
 
-def generate_render_player_url(file_key):
-    """Generate Render player URL with proper formatting."""
-    encoded_key = quote(file_key)
-    # Render URL format: https://your-app.onrender.com/player?file=filename
-    return f"{PLAYER_BASE_URL}/player?file={encoded_key}"
+def get_file_type(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    for file_type, extensions in SUPPORTED_VIDEO_FORMATS.items():
+        if ext in extensions:
+            return file_type
+    return 'other'
+
+def generate_player_url(filename, presigned_url):
+    if not RENDER_URL:
+        return None
+    file_type = get_file_type(filename)
+    if file_type in ['video', 'audio', 'image']:
+        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
+        return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
+    return None
 
 # --- Progress Callback Management ---
 last_update_time = {}
@@ -291,7 +301,7 @@ async def stats_handler(client: Client, message: Message):
         f"• Wasabi connected: {'✅' if s3_client else '❌'}\n"
         f"• Bucket: {WASABI_BUCKET}\n"
         f"• Region: {WASABI_REGION}\n"
-        f"• Player URL: {PLAYER_BASE_URL}"
+        f"• Player URL: {RENDER_URL}"
     )
     await message.reply_text(stats_text)
 
@@ -419,7 +429,7 @@ async def player_url_handler(client: Client, message: Message):
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Bot is starting...")
-    logger.info(f"Player base URL: {PLAYER_BASE_URL}")
+    logger.info(f"Player base URL: {RENDER_URL}")
     logger.info(f"Supported video formats: {SUPPORTED_VIDEO_FORMATS}")
     app.run()
     logger.info("Bot has stopped.")
