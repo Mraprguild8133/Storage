@@ -1,7 +1,5 @@
 import os
 import time
-import base64
-import threading
 import math
 import asyncio
 import logging
@@ -11,7 +9,7 @@ import boto3
 from botocore.exceptions import ClientError
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from flask import Flask, render_template, jsonify
+
 # Import configuration
 from config import config
 
@@ -57,34 +55,6 @@ except Exception as e:
     logger.error(f"Failed to connect to Wasabi: {e}")
     s3_client = None
 
-# --- Flask app for player.html ---
-# -----------------------------
-flask_app = Flask(__name__, template_folder="templates")
-
-@flask_app.route("/")
-def index():
-    return render_template("index.html")
-
-@flask_app.route("/player/<media_type>/<encoded_url>")
-def player(media_type, encoded_url):
-    # Decode the URL
-    try:
-        # Add padding if needed
-        padding = 4 - (len(encoded_url) % 4)
-        if padding != 4:
-            encoded_url += '=' * padding
-        media_url = base64.urlsafe_b64decode(encoded_url).decode()
-        return render_template("player.html", media_type=media_type, media_url=media_url)
-    except Exception as e:
-        return f"Error decoding URL: {str(e)}", 400
-
-@flask_app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000, debug=False)
-
 # --- Helpers & Decorators ---
 def is_admin(func):
     """Decorator to check if the user is the admin."""
@@ -118,26 +88,6 @@ def humanbytes(size):
         size /= power
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
-
-def get_media_type(filename):
-    """Determine media type based on file extension."""
-    ext = filename.lower().split('.')[-1]
-    video_extensions = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v']
-    audio_extensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
-    
-    if ext in video_extensions:
-        return 'video'
-    elif ext in audio_extensions:
-        return 'audio'
-    else:
-        return 'file'
-
-def generate_player_url(presigned_url, filename):
-    """Generate a player URL for the media file."""
-    media_type = get_media_type(filename)
-    # Encode the URL for safe passing in URL
-    encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
-    return f"http://0.0.0.0:8000/player/{media_type}/{encoded_url}"
 
 # --- Progress Callback Management ---
 last_update_time = {}
@@ -292,8 +242,7 @@ async def stats_handler(client: Client, message: Message):
         f"• Authorized users: {len(ALLOWED_USERS)}\n"
         f"• Wasabi connected: {'✅' if s3_client else '❌'}\n"
         f"• Bucket: {WASABI_BUCKET}\n"
-        f"• Region: {WASABI_REGION}\n"
-        f"• Flask server: Running on port 8000"
+        f"• Region: {WASABI_REGION}"
     )
     await message.reply_text(stats_text)
 
@@ -340,29 +289,14 @@ async def file_handler(client: Client, message: Message):
         presigned_url = await generate_presigned_url(safe_filename)
         
         if presigned_url:
-            # Generate player URL for media files
-            media_type = get_media_type(file_name)
-            if media_type in ['video', 'audio']:
-                player_url = generate_player_url(presigned_url, file_name)
-                final_message = (
-                    f"✅ **File Uploaded Successfully!**\n\n"
-                    f"**File:** `{file_name}`\n"
-                    f"**Size:** {humanbytes(file_size)}\n"
-                    f"**Stored as:** `{safe_filename}`\n"
-                    f"**Direct Link (7 days):**\n"
-                    f"`{presigned_url}`\n\n"
-                    f"🎬 **Player URL:**\n"
-                    f"{player_url}"
-                )
-            else:
-                final_message = (
-                    f"✅ **File Uploaded Successfully!**\n\n"
-                    f"**File:** `{file_name}`\n"
-                    f"**Size:** {humanbytes(file_size)}\n"
-                    f"**Stored as:** `{safe_filename}`\n"
-                    f"**Download Link (valid for 7 days):**\n"
-                    f"{presigned_url}"
-                )
+            final_message = (
+                f"✅ **File Uploaded Successfully!**\n\n"
+                f"**File:** `{file_name}`\n"
+                f"**Size:** {humanbytes(file_size)}\n"
+                f"**Stored as:** `{safe_filename}`\n"
+                f"**Link (valid for 7 days):**\n"
+                f"{presigned_url}"
+            )
             await status_message.edit_text(final_message, disable_web_page_preview=True)
         else:
             await status_message.edit_text(
@@ -385,28 +319,7 @@ async def file_handler(client: Client, message: Message):
              del last_update_time[status_message.id]
 
 # --- Main Execution ---
-async def main():
-    """Main function to run both Flask and Telegram bot"""
-    # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("Flask server started on port 8000")
-    
-    # Start the Telegram bot
-    logger.info("Starting Telegram bot...")
-    await app.start()
-    
-    # Get bot info
-    bot_info = await app.get_me()
-    logger.info(f"Bot @{bot_info.username} is now running!")
-    
-    # Keep the bot running
-    await asyncio.Event().wait()
-
 if __name__ == "__main__":
-    # Create necessary directories
-    os.makedirs("templates", exist_ok=True)
-    os.makedirs("downloads", exist_ok=True)
-    
-    # Run the main function
-    asyncio.run(main())
+    logger.info("Bot is starting...")
+    app.run()
+    logger.info("Bot has stopped.")
