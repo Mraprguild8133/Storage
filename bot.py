@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from bot import app
-
+from config import config 
 # Configure basic logging
 logging.basicConfig(
     level=logging.INFO,
