@@ -309,6 +309,7 @@ async def copy_links_callback(client, callback_query):
     
     # Find filename from stored data
     filename = None
+    file_type = None
     for stored_hash, stored_data in file_store.items():
         if stored_hash == file_hash:
             filename = stored_data.get('filename')
@@ -428,6 +429,30 @@ async def stats_handler(client: Client, message: Message):
     )
     await message.reply_text(stats_text)
 
+@app.on_message(filters.command("cleanup"))
+@is_admin
+async def manual_cleanup_handler(client: Client, message: Message):
+    """Manual cleanup of file store"""
+    initial_count = len(file_store)
+    
+    # Remove entries older than 1 hour
+    current_time = time.time()
+    expired_entries = []
+    
+    for file_hash, file_data in file_store.items():
+        if current_time - file_data['timestamp'] > 3600:  # 1 hour
+            expired_entries.append(file_hash)
+    
+    for file_hash in expired_entries:
+        del file_store[file_hash]
+    
+    await message.reply_text(
+        f"🧹 **Cleanup Complete**\n"
+        f"• Removed entries: {len(expired_entries)}\n"
+        f"• Remaining entries: {len(file_store)}\n"
+        f"• Total cleaned: {initial_count - len(file_store)}"
+    )
+
 # --- File Handling Logic ---
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 @is_authorized
@@ -497,6 +522,14 @@ async def file_handler(client: Client, message: Message):
                 'timestamp': time.time()
             }
             
+            # Clean up old entries if store gets too large
+            if len(file_store) > 150:
+                # Remove oldest 50 entries
+                sorted_entries = sorted(file_store.items(), key=lambda x: x[1]['timestamp'])
+                for i in range(min(50, len(sorted_entries))):
+                    del file_store[sorted_entries[i][0]]
+                logger.info(f"Cleaned up 50 old file store entries")
+            
             # Create message with streaming options
             stream_message = (
                 f"🎉 **File Uploaded Successfully!**\n\n"
@@ -533,44 +566,37 @@ async def file_handler(client: Client, message: Message):
                     f"**Size:** {humanbytes(file_size)}\n"
                     f"**Stored as:** `{safe_filename}`\n"
                     f"⚠️ *Could not generate download link*"
-                )
-
-    except Exception as e:
+    )
+                except Exception as e:
         logger.error(f"An error occurred during file processing: {e}", exc_info=True)
         await status_message.edit_text(f"❌ **Upload failed:**\n`{str(e)}`")
-    finally:
-        # Cleanup
+            finally:
+# Cleanup
         if os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"Cleaned up local file: {file_path}")
         if status_message.id in last_update_time:
              del last_update_time[status_message.id]
 
-# --- Cleanup Task ---
-async def cleanup_file_store():
-    """Periodically clean up old file store entries"""
-    while True:
-        await asyncio.sleep(3600)  # Run every hour
-        current_time = time.time()
-        expired_entries = []
-        
-        for file_hash, file_data in file_store.items():
-            if current_time - file_data['timestamp'] > 24 * 3600:  # 24 hours
-                expired_entries.append(file_hash)
-        
-        for file_hash in expired_entries:
-            del file_store[file_hash]
-        
-        if expired_entries:
-            logger.info(f"Cleaned up {len(expired_entries)} expired file store entries")
+# --- Startup Handler ---
+@app.on_message(filters.command("init"))
+async def init_handler(client: Client, message: Message):
+    """Initialize bot and start background tasks"""
+    await message.reply_text("🤖 Bot is running and ready!")
 
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Bot is starting...")
     logger.info(f"Streaming domains configured for region: {WASABI_REGION}")
     
-    # Start cleanup task
-    asyncio.create_task(cleanup_file_store())
+    # No need for separate cleanup task - cleanup happens during file operations
+    # and via manual /cleanup command
     
-    app.run()
-    logger.info("Bot has stopped.")
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot crashed with error: {e}")
+    finally:
+        logger.info("Bot has stopped.")
