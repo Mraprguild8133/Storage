@@ -29,9 +29,9 @@ WASABI_BUCKET = config.WASABI_BUCKET
 WASABI_REGION = config.WASABI_REGION
 ADMIN_ID = config.ADMIN_ID
 
-# Player URL configuration
-PLAYER_BASE_URL = getattr(config, 'PLAYER_BASE_URL', 'https://player.wasabi.com')  # Customize this
-SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp'}
+# Player URL configuration - Using Render URL
+PLAYER_BASE_URL = getattr(config, 'PLAYER_BASE_URL', 'https://your-video-player-app.onrender.com')
+SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpeg', '.mpg'}
 
 # In-memory storage for authorized user IDs. Starts with the admin.
 # For persistence, consider using a database or a file.
@@ -102,10 +102,11 @@ def is_video_file(filename):
     """Check if file is a supported video format."""
     return get_file_extension(filename) in SUPPORTED_VIDEO_FORMATS
 
-def generate_player_url(file_key, base_url=PLAYER_BASE_URL):
-    """Generate player URL for video files."""
+def generate_render_player_url(file_key):
+    """Generate Render player URL with proper formatting."""
     encoded_key = quote(file_key)
-    return f"{base_url}/?file={encoded_key}"
+    # Render URL format: https://your-app.onrender.com/player?file=filename
+    return f"{PLAYER_BASE_URL}/player?file={encoded_key}"
 
 # --- Progress Callback Management ---
 last_update_time = {}
@@ -241,7 +242,10 @@ async def help_handler(client: Client, message: Message):
 • `/stats` - Bot statistics
 
 **Supported Video Formats:**
-MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, 3GP
+MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, 3GP, MPEG, MPG
+
+**Player URLs:**
+Video files get special player URLs that work with our Render video player.
 """
     await message.reply_text(help_text)
 
@@ -333,10 +337,10 @@ async def file_handler(client: Client, message: Message):
         # 3. Generate a pre-signed URL (valid for 7 days)
         presigned_url = await generate_presigned_url(safe_filename)
         
-        # 4. Generate player URL for video files
+        # 4. Generate Render player URL for video files
         player_url = None
         if is_video_file(file_name):
-            player_url = generate_player_url(safe_filename)
+            player_url = generate_render_player_url(safe_filename)
         
         # 5. Prepare final message
         if presigned_url:
@@ -390,7 +394,7 @@ async def player_url_handler(client: Client, message: Message):
             s3_client.head_object(Bucket=WASABI_BUCKET, Key=filename)
             
             if is_video_file(filename):
-                player_url = generate_player_url(filename)
+                player_url = generate_render_player_url(filename)
                 await message.reply_text(
                     f"🎥 **Player URL for `{filename}`**\n\n"
                     f"{player_url}\n\n"
