@@ -3,14 +3,14 @@
 
 import logging
 from pyrogram import Client
-from config import config
+from config import API_ID, API_HASH, BOT_TOKEN
 
 LOGGER = logging.getLogger(__name__)
 
 # Initialize the main Pyrogram client instance
 # This 'app' instance will be imported by other modules (like handlers)
 # to register callbacks.
-if all([config]):
+if all([API_ID, API_HASH, BOT_TOKEN]):
     app = Client(
         "wasabi_file_bot",
         api_id=int(API_ID),
