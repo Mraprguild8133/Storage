@@ -1,33 +1,23 @@
 import os
 import time
+import base64
+import threading
 import math
 import asyncio
 import logging
-import base64
-import threading
 from functools import wraps
-from collections import defaultdict
-from datetime import datetime, timedelta
 
 import boto3
 from botocore.exceptions import ClientError
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from flask import Flask, render_template, jsonify
-
 # Import configuration
 from config import config
 
 # --- Configuration ---
 # Set up basic logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Use configuration from config module
@@ -39,113 +29,10 @@ WASABI_SECRET_KEY = config.WASABI_SECRET_KEY
 WASABI_BUCKET = config.WASABI_BUCKET
 WASABI_REGION = config.WASABI_REGION
 ADMIN_ID = config.ADMIN_ID
-FLASK_HOST = getattr(config, 'FLASK_HOST', '0.0.0.0')
-FLASK_PORT = getattr(config, 'FLASK_PORT', 8000)
 
-# --- Persistence for Authorized Users ---
-class UserManager:
-    def __init__(self, filename="allowed_users.json"):
-        self.filename = filename
-        self.load_users()
-    
-    def load_users(self):
-        try:
-            if os.path.exists(self.filename):
-                with open(self.filename, 'r') as f:
-                    import json
-                    data = json.load(f)
-                    self.allowed_users = set(data.get('allowed_users', [ADMIN_ID]))
-            else:
-                self.allowed_users = {ADMIN_ID}
-                self.save_users()
-        except Exception as e:
-            logger.error(f"Error loading users: {e}")
-            self.allowed_users = {ADMIN_ID}
-    
-    def save_users(self):
-        try:
-            with open(self.filename, 'w') as f:
-                import json
-                json.dump({'allowed_users': list(self.allowed_users)}, f, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving users: {e}")
-    
-    def add_user(self, user_id):
-        self.allowed_users.add(user_id)
-        self.save_users()
-    
-    def remove_user(self, user_id):
-        if user_id in self.allowed_users:
-            self.allowed_users.remove(user_id)
-            self.save_users()
-    
-    def is_authorized(self, user_id):
-        return user_id in self.allowed_users
-    
-    def get_all_users(self):
-        return list(self.allowed_users)
-
-# Initialize user manager
-user_manager = UserManager()
-
-# --- Rate Limiter ---
-class RateLimiter:
-    def __init__(self):
-        self.user_uploads = defaultdict(list)
-    
-    def is_limited(self, user_id, max_uploads=10, time_window=3600):
-        now = datetime.now()
-        # Remove old entries
-        self.user_uploads[user_id] = [
-            timestamp for timestamp in self.user_uploads[user_id]
-            if now - timestamp < timedelta(seconds=time_window)
-        ]
-        
-        # Check if user exceeds limit
-        if len(self.user_uploads[user_id]) >= max_uploads:
-            return True
-        
-        # Add current upload
-        self.user_uploads[user_id].append(now)
-        return False
-    
-    def get_remaining_uploads(self, user_id, max_uploads=10, time_window=3600):
-        now = datetime.now()
-        self.user_uploads[user_id] = [
-            timestamp for timestamp in self.user_uploads[user_id]
-            if now - timestamp < timedelta(seconds=time_window)
-        ]
-        return max(0, max_uploads - len(self.user_uploads[user_id]))
-
-# Initialize rate limiter
-rate_limiter = RateLimiter()
-
-# --- Flask Application ---
-flask_app = Flask(__name__, template_folder="templates")
-
-@flask_app.route("/")
-def index():
-    return render_template("index.html")
-
-@flask_app.route("/player/<media_type>/<encoded_url>")
-def player(media_type, encoded_url):
-    try:
-        # Add padding if needed
-        padding = 4 - (len(encoded_url) % 4)
-        if padding != 4:
-            encoded_url += '=' * padding
-        media_url = base64.urlsafe_b64decode(encoded_url).decode()
-        return render_template("player.html", media_type=media_type, media_url=media_url)
-    except Exception as e:
-        return f"Error decoding URL: {str(e)}", 400
-
-@flask_app.route("/health")
-def health():
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
-
-def run_flask():
-    logger.info(f"Starting Flask server on {FLASK_HOST}:{FLASK_PORT}")
-    flask_app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)
+# In-memory storage for authorized user IDs. Starts with the admin.
+# For persistence, consider using a database or a file.
+ALLOWED_USERS = {ADMIN_ID}
 
 # --- Bot & Wasabi Client Initialization ---
 app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -170,6 +57,34 @@ except Exception as e:
     logger.error(f"Failed to connect to Wasabi: {e}")
     s3_client = None
 
+# --- Flask app for player.html ---
+# -----------------------------
+flask_app = Flask(__name__, template_folder="templates")
+
+@flask_app.route("/")
+def index():
+    return render_template("index.html")
+
+@flask_app.route("/player/<media_type>/<encoded_url>")
+def player(media_type, encoded_url):
+    # Decode the URL
+    try:
+        # Add padding if needed
+        padding = 4 - (len(encoded_url) % 4)
+        if padding != 4:
+            encoded_url += '=' * padding
+        media_url = base64.urlsafe_b64decode(encoded_url).decode()
+        return render_template("player.html", media_type=media_type, media_url=media_url)
+    except Exception as e:
+        return f"Error decoding URL: {str(e)}", 400
+
+@flask_app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=8000, debug=False)
+
 # --- Helpers & Decorators ---
 def is_admin(func):
     """Decorator to check if the user is the admin."""
@@ -185,7 +100,7 @@ def is_authorized(func):
     """Decorator to check if the user is authorized."""
     @wraps(func)
     async def wrapper(client, message):
-        if user_manager.is_authorized(message.from_user.id):
+        if message.from_user.id in ALLOWED_USERS:
             await func(client, message)
         else:
             await message.reply_text("⛔️ You are not authorized to use this bot. Contact the admin.")
@@ -204,25 +119,25 @@ def humanbytes(size):
         n += 1
     return f"{size:.2f} {power_labels[n]}B"
 
-def get_file_type(mime_type, file_name):
-    """Determine file type for player."""
-    if mime_type.startswith('video/'):
+def get_media_type(filename):
+    """Determine media type based on file extension."""
+    ext = filename.lower().split('.')[-1]
+    video_extensions = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v']
+    audio_extensions = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']
+    
+    if ext in video_extensions:
         return 'video'
-    elif mime_type.startswith('audio/'):
+    elif ext in audio_extensions:
         return 'audio'
-    elif mime_type.startswith('image/'):
-        return 'image'
     else:
-        # Fallback based on file extension
-        ext = file_name.lower().split('.')[-1] if '.' in file_name else ''
-        if ext in ['mp4', 'mkv', 'avi', 'mov', 'webm']:
-            return 'video'
-        elif ext in ['mp3', 'wav', 'ogg', 'flac', 'm4a']:
-            return 'audio'
-        elif ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']:
-            return 'image'
-        else:
-            return 'file'
+        return 'file'
+
+def generate_player_url(presigned_url, filename):
+    """Generate a player URL for the media file."""
+    media_type = get_media_type(filename)
+    # Encode the URL for safe passing in URL
+    encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
+    return f"http://0.0.0.0:8000/player/{media_type}/{encoded_url}"
 
 # --- Progress Callback Management ---
 last_update_time = {}
@@ -258,22 +173,6 @@ async def progress_callback(current, total, message, status):
         logger.warning(f"Failed to edit message: {e}")
 
 # --- Enhanced S3 Operations ---
-async def handle_s3_operation(operation, *args, **kwargs):
-    """Generic S3 operation handler with error management"""
-    try:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, operation, *args, **kwargs)
-    except ClientError as e:
-        error_code = e.response['Error']['Code']
-        if error_code == 'NoSuchBucket':
-            raise Exception(f"Bucket {WASABI_BUCKET} does not exist")
-        elif error_code == 'AccessDenied':
-            raise Exception("Access denied to Wasabi bucket")
-        elif error_code == 'InvalidAccessKeyId':
-            raise Exception("Invalid Wasabi access credentials")
-        else:
-            raise Exception(f"S3 operation failed: {error_code}")
-
 async def upload_to_wasabi(file_path, file_name, status_message):
     """Upload file to Wasabi with retry logic and progress tracking."""
     max_retries = 3
@@ -343,107 +242,22 @@ async def generate_presigned_url(file_name):
         logger.error(f"Failed to generate presigned URL: {e}")
         return None
 
-async def get_bucket_stats():
-    """Get basic bucket statistics."""
-    try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, 
-            lambda: s3_client.list_objects_v2(Bucket=WASABI_BUCKET, MaxKeys=1000)
-        )
-        
-        total_size = 0
-        total_files = 0
-        
-        if 'Contents' in response:
-            for obj in response['Contents']:
-                total_size += obj['Size']
-                total_files += 1
-        
-        return {
-            'total_files': total_files,
-            'total_size': total_size,
-            'human_size': humanbytes(total_size)
-        }
-    except Exception as e:
-        logger.error(f"Error getting bucket stats: {e}")
-        return None
-
 # --- Bot Command Handlers ---
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    is_auth = user_manager.is_authorized(user_id)
-    
-    welcome_text = (
-        f"👋 **Welcome to Wasabi Storage Bot!**\n\n"
-        f"**Your User ID:** `{user_id}`\n"
-        f"**Status:** {'✅ Authorized' if is_auth else '❌ Not authorized'}\n\n"
+    await message.reply_text(
+        f"👋 Welcome!\n\nThis bot can upload files to Wasabi storage.\n"
+        f"Your User ID is: `{message.from_user.id}`\n\n"
+        "Send me any file if you are an authorized user."
     )
-    
-    if is_auth:
-        welcome_text += (
-            "**Available Commands:**\n"
-            "• Just send me any file to upload it to Wasabi\n"
-            "• `/stats` - Check bot statistics\n"
-            "• `/help` - Show this help message\n\n"
-            "**Rate Limit:** 10 uploads per hour\n"
-            "**Max File Size:** 4GB"
-        )
-    else:
-        welcome_text += (
-            "To use this bot, you need to be authorized by the admin.\n"
-            "Contact the admin with your User ID to get access."
-        )
-    
-    await message.reply_text(welcome_text)
-
-@app.on_message(filters.command("help"))
-async def help_handler(client: Client, message: Message):
-    help_text = (
-        "🤖 **Wasabi Storage Bot Help**\n\n"
-        "**For Authorized Users:**\n"
-        "• Send any file (document, video, audio) to upload to Wasabi\n"
-        "• Get a shareable link with web player\n\n"
-        "**For Admin:**\n"
-        "• `/adduser <user_id>` - Add authorized user\n"
-        "• `/removeuser <user_id>` - Remove user\n"
-        "• `/listusers` - Show authorized users\n"
-        "• `/stats` - Bot and storage statistics\n"
-        "• `/broadcast <message>` - Broadcast message to all users\n\n"
-        "**General Commands:**\n"
-        "• `/start` - Start the bot\n"
-        "• `/help` - Show this help\n\n"
-        "**Features:**\n"
-        "• Progress tracking for uploads\n"
-        "• Web player for media files\n"
-        "• Rate limiting (10 uploads/hour)\n"
-        "• Support for files up to 4GB"
-    )
-    await message.reply_text(help_text)
 
 @app.on_message(filters.command("adduser"))
 @is_admin
 async def add_user_handler(client: Client, message: Message):
     try:
         user_id_to_add = int(message.text.split(" ", 1)[1])
-        if user_manager.is_authorized(user_id_to_add):
-            await message.reply_text(f"ℹ️ User `{user_id_to_add}` is already authorized.")
-        else:
-            user_manager.add_user(user_id_to_add)
-            await message.reply_text(f"✅ User `{user_id_to_add}` has been added successfully.")
-            
-            # Notify the user if possible
-            try:
-                await client.send_message(
-                    user_id_to_add,
-                    "🎉 **You've been authorized to use Wasabi Storage Bot!**\n\n"
-                    "You can now upload files by sending them to this bot. "
-                    "Use /help to see available commands."
-                )
-            except Exception as e:
-                logger.warning(f"Could not notify user {user_id_to_add}: {e}")
-                
+        ALLOWED_USERS.add(user_id_to_add)
+        await message.reply_text(f"✅ User `{user_id_to_add}` has been added successfully.")
     except (IndexError, ValueError):
         await message.reply_text("⚠️ **Usage:** /adduser `<user_id>`")
 
@@ -455,9 +269,8 @@ async def remove_user_handler(client: Client, message: Message):
         if user_id_to_remove == ADMIN_ID:
             await message.reply_text("🚫 You cannot remove the admin.")
             return
-        
-        if user_manager.is_authorized(user_id_to_remove):
-            user_manager.remove_user(user_id_to_remove)
+        if user_id_to_remove in ALLOWED_USERS:
+            ALLOWED_USERS.remove(user_id_to_remove)
             await message.reply_text(f"🗑 User `{user_id_to_remove}` has been removed.")
         else:
             await message.reply_text("🤷 User not found in the authorized list.")
@@ -467,121 +280,33 @@ async def remove_user_handler(client: Client, message: Message):
 @app.on_message(filters.command("listusers"))
 @is_admin
 async def list_users_handler(client: Client, message: Message):
-    users = user_manager.get_all_users()
-    user_list = "\n".join([f"- `{user_id}`" for user_id in users])
-    await message.reply_text(f"👥 **Authorized Users ({len(users)}):**\n{user_list}")
+    user_list = "\n".join([f"- `{user_id}`" for user_id in ALLOWED_USERS])
+    await message.reply_text(f"👥 **Authorized Users:**\n{user_list}")
 
 @app.on_message(filters.command("stats"))
-@is_authorized
+@is_admin
 async def stats_handler(client: Client, message: Message):
     """Show bot statistics"""
-    # Get bucket stats
-    bucket_stats = await get_bucket_stats()
-    
-    # Get rate limit info
-    remaining_uploads = rate_limiter.get_remaining_uploads(message.from_user.id)
-    
     stats_text = (
-        f"📊 **Bot Statistics**\n\n"
-        f"**🤖 Bot Info:**\n"
-        f"• Authorized users: {len(user_manager.get_all_users())}\n"
+        f"🤖 **Bot Statistics**\n"
+        f"• Authorized users: {len(ALLOWED_USERS)}\n"
         f"• Wasabi connected: {'✅' if s3_client else '❌'}\n"
-        f"• Flask server: {FLASK_HOST}:{FLASK_PORT}\n\n"
-        f"**💾 Storage Info:**\n"
         f"• Bucket: {WASABI_BUCKET}\n"
         f"• Region: {WASABI_REGION}\n"
+        f"• Flask server: Running on port 8000"
     )
-    
-    if bucket_stats:
-        stats_text += (
-            f"• Total files: {bucket_stats['total_files']}\n"
-            f"• Total size: {bucket_stats['human_size']}\n"
-        )
-    
-    stats_text += f"\n**👤 Your Info:**\n• Remaining uploads (this hour): {remaining_uploads}/10"
-    
     await message.reply_text(stats_text)
 
-@app.on_message(filters.command("broadcast"))
-@is_admin
-async def broadcast_handler(client: Client, message: Message):
-    """Broadcast message to all authorized users"""
-    try:
-        broadcast_text = message.text.split(" ", 1)[1]
-        users = user_manager.get_all_users()
-        successful = 0
-        failed = 0
-        
-        status_msg = await message.reply_text(f"📢 Broadcasting to {len(users)} users...")
-        
-        for user_id in users:
-            try:
-                await client.send_message(
-                    user_id,
-                    f"📢 **Broadcast from Admin**\n\n{broadcast_text}"
-                )
-                successful += 1
-            except Exception as e:
-                logger.warning(f"Failed to send broadcast to {user_id}: {e}")
-                failed += 1
-            
-            # Small delay to avoid rate limits
-            await asyncio.sleep(0.1)
-        
-        await status_msg.edit_text(
-            f"📊 **Broadcast Complete**\n\n"
-            f"✅ Successful: {successful}\n"
-            f"❌ Failed: {failed}\n"
-            f"📨 Total: {len(users)}"
-        )
-        
-    except (IndexError, ValueError):
-        await message.reply_text("⚠️ **Usage:** /broadcast `<message>`")
-
 # --- File Handling Logic ---
-@app.on_message(filters.document | filters.video | filters.audio | filters.photo)
+@app.on_message(filters.document | filters.video | filters.audio)
 @is_authorized
 async def file_handler(client: Client, message: Message):
     if not s3_client:
         await message.reply_text("❌ **Error:** Wasabi client is not initialized. Check server logs.")
         return
 
-    # Check rate limit
-    if rate_limiter.is_limited(message.from_user.id):
-        remaining = rate_limiter.get_remaining_uploads(message.from_user.id)
-        await message.reply_text(
-            f"🚫 **Rate limit exceeded!**\n\n"
-            f"You can upload {remaining} more files in the next hour.\n"
-            f"Please wait before uploading more files."
-        )
-        return
-
-    # Get file information
-    if message.document:
-        media = message.document
-        mime_type = media.mime_type or 'application/octet-stream'
-    elif message.video:
-        media = message.video
-        mime_type = 'video/mp4'
-    elif message.audio:
-        media = message.audio
-        mime_type = 'audio/mpeg'
-    elif message.photo:
-        media = message.photo
-        mime_type = 'image/jpeg'
-    else:
-        await message.reply_text("❌ Unsupported file type.")
-        return
-
-    file_name = getattr(media, 'file_name', None)
-    if not file_name:
-        # Generate filename for photos
-        if message.photo:
-            file_ext = '.jpg'
-        else:
-            file_ext = '.bin'
-        file_name = f"telegram_{message.id}{file_ext}"
-    
+    media = message.document or message.video or message.audio
+    file_name = media.file_name
     file_size = media.file_size
     
     # Telegram's limit for bots is 2GB for download, 4GB for upload with MTProto API
@@ -615,24 +340,29 @@ async def file_handler(client: Client, message: Message):
         presigned_url = await generate_presigned_url(safe_filename)
         
         if presigned_url:
-            # Determine media type for player
-            media_type = get_file_type(mime_type, file_name)
-            
-            # Encode URL for web player
-            encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
-            
-            # Generate web player URL
-            web_player_url = f"http://{FLASK_HOST}:{FLASK_PORT}/player/{media_type}/{encoded_url}"
-            
-            final_message = (
-                f"✅ **File Uploaded Successfully!**\n\n"
-                f"**File:** `{file_name}`\n"
-                f"**Type:** {media_type.title()}\n"
-                f"**Size:** {humanbytes(file_size)}\n"
-                f"**Stored as:** `{safe_filename}`\n\n"
-                f"**🔗 Direct Link (7 days):**\n`{presigned_url}`\n\n"
-                f"**🎬 Web Player:**\n{web_player_url}"
-            )
+            # Generate player URL for media files
+            media_type = get_media_type(file_name)
+            if media_type in ['video', 'audio']:
+                player_url = generate_player_url(presigned_url, file_name)
+                final_message = (
+                    f"✅ **File Uploaded Successfully!**\n\n"
+                    f"**File:** `{file_name}`\n"
+                    f"**Size:** {humanbytes(file_size)}\n"
+                    f"**Stored as:** `{safe_filename}`\n"
+                    f"**Direct Link (7 days):**\n"
+                    f"`{presigned_url}`\n\n"
+                    f"🎬 **Player URL:**\n"
+                    f"{player_url}"
+                )
+            else:
+                final_message = (
+                    f"✅ **File Uploaded Successfully!**\n\n"
+                    f"**File:** `{file_name}`\n"
+                    f"**Size:** {humanbytes(file_size)}\n"
+                    f"**Stored as:** `{safe_filename}`\n"
+                    f"**Download Link (valid for 7 days):**\n"
+                    f"{presigned_url}"
+                )
             await status_message.edit_text(final_message, disable_web_page_preview=True)
         else:
             await status_message.edit_text(
@@ -654,21 +384,13 @@ async def file_handler(client: Client, message: Message):
         if status_message.id in last_update_time:
              del last_update_time[status_message.id]
 
-# --- Error Handler ---
-@app.on_message(filters.command("reload"))
-@is_admin
-async def reload_handler(client: Client, message: Message):
-    """Reload user data from disk"""
-    user_manager.load_users()
-    await message.reply_text("✅ User data reloaded from disk.")
-
 # --- Main Execution ---
 async def main():
     """Main function to run both Flask and Telegram bot"""
     # Start Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info("Flask server thread started")
+    logger.info("Flask server started on port 8000")
     
     # Start the Telegram bot
     logger.info("Starting Telegram bot...")
@@ -676,39 +398,15 @@ async def main():
     
     # Get bot info
     bot_info = await app.get_me()
-    logger.info(f"Bot started successfully: @{bot_info.username}")
-    
-    # Send startup notification to admin
-    try:
-        await app.send_message(
-            ADMIN_ID,
-            f"🤖 **Bot Started Successfully**\n\n"
-            f"**Bot:** @{bot_info.username}\n"
-            f"**Flask:** {FLASK_HOST}:{FLASK_PORT}\n"
-            f"**Wasabi:** {'✅ Connected' if s3_client else '❌ Disconnected'}\n"
-            f"**Users:** {len(user_manager.get_all_users())} authorized\n"
-            f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-    except Exception as e:
-        logger.warning(f"Could not send startup message to admin: {e}")
+    logger.info(f"Bot @{bot_info.username} is now running!")
     
     # Keep the bot running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
     # Create necessary directories
-    os.makedirs("downloads", exist_ok=True)
     os.makedirs("templates", exist_ok=True)
+    os.makedirs("downloads", exist_ok=True)
     
     # Run the main function
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
-    finally:
-        # Ensure proper cleanup
-        if app.is_connected:
-            asyncio.run(app.stop())
-        logger.info("Bot has stopped completely.")
+    asyncio.run(main())
