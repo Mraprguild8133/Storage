@@ -1,66 +1,208 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Media Player - {{ media_type.title() }}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Player - {{ filename }}</title>
     <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 0; 
-            padding: 20px; 
-            background: #1a1a1a; 
-            color: white; 
-            text-align: center;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        .container { 
-            max-width: 1000px; 
-            margin: 0 auto; 
-        }
-        .player-container {
-            background: #2d2d2d;
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #ffffff;
+            min-height: 100vh;
             padding: 20px;
-            border-radius: 10px;
-            margin: 20px 0;
         }
-        video, audio {
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #4cc9f0, #4361ee);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .filename {
+            color: #b8b8b8;
+            font-size: 1.1rem;
+            word-break: break-all;
+        }
+        
+        .video-container {
+            position: relative;
             width: 100%;
-            max-width: 800px;
-            border-radius: 5px;
+            max-width: 900px;
+            margin: 0 auto;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
         }
-        .download-btn {
-            display: inline-block;
-            padding: 10px 20px;
-            background: #007bff;
+        
+        video {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 10px;
+        }
+        
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 12px 25px;
+            background: linear-gradient(45deg, #4361ee, #3a0ca3);
             color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
             text-decoration: none;
-            border-radius: 5px;
-            margin: 10px;
+            display: inline-block;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(67, 97, 238, 0.3);
+        }
+        
+        .btn-download {
+            background: linear-gradient(45deg, #f72585, #b5179e);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 50px;
+            font-size: 1.2rem;
+            color: #4cc9f0;
+        }
+        
+        .error {
+            text-align: center;
+            padding: 50px;
+            color: #f72585;
+            font-size: 1.2rem;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .btn {
+                padding: 10px 20px;
+                font-size: 0.9rem;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎬 Media Player</h1>
-        <div class="player-container">
-            {% if media_type == 'video' %}
-                <video controls autoplay>
-                    <source src="{{ media_url }}" type="video/mp4">
-                    Your browser does not support the video tag.
-                </video>
-            {% elif media_type == 'audio' %}
-                <audio controls autoplay>
-                    <source src="{{ media_url }}" type="audio/mpeg">
-                    Your browser does not support the audio element.
-                </audio>
-            {% else %}
-                <p>This file type cannot be played in the browser.</p>
-            {% endif %}
+        <div class="header">
+            <h1>🎬 Video Player</h1>
+            <div class="filename">{{ filename }}</div>
         </div>
         
-        <a href="{{ media_url }}" class="download-btn" download>
-            📥 Download File
-        </a>
+        <div class="video-container">
+            <video id="videoPlayer" controls autoplay playsinline>
+                <source src="{{ video_url }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+        </div>
         
-        <p><small>Link expires in 7 days</small></p>
+        <div class="controls">
+            <button class="btn" onclick="toggleFullscreen()">📺 Fullscreen</button>
+            <a href="{{ video_url }}" class="btn btn-download" download="{{ filename }}">📥 Download</a>
+            <button class="btn" onclick="shareVideo()">🔗 Share</button>
+        </div>
     </div>
+
+    <script>
+        const video = document.getElementById('videoPlayer');
+        
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                video.requestFullscreen().catch(err => {
+                    console.log(`Error attempting to enable fullscreen: ${err.message}`);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+        
+        function shareVideo() {
+            if (navigator.share) {
+                navigator.share({
+                    title: 'Video Player',
+                    text: 'Check out this video',
+                    url: window.location.href
+                })
+                .catch(error => console.log('Error sharing:', error));
+            } else {
+                // Fallback: copy to clipboard
+                navigator.clipboard.writeText(window.location.href)
+                    .then(() => alert('Link copied to clipboard!'))
+                    .catch(err => alert('Failed to copy link: ' + err));
+            }
+        }
+        
+        // Add keyboard controls
+        document.addEventListener('keydown', (e) => {
+            switch(e.code) {
+                case 'Space':
+                    e.preventDefault();
+                    video.paused ? video.play() : video.pause();
+                    break;
+                case 'ArrowRight':
+                    video.currentTime += 10;
+                    break;
+                case 'ArrowLeft':
+                    video.currentTime -= 10;
+                    break;
+                case 'KeyF':
+                    toggleFullscreen();
+                    break;
+            }
+        });
+        
+        // Show loading state
+        video.addEventListener('loadstart', () => {
+            console.log('Video loading started');
+        });
+        
+        video.addEventListener('canplay', () => {
+            console.log('Video can start playing');
+        });
+    </script>
 </body>
 </html>
