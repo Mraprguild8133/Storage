@@ -16,8 +16,9 @@ class Config:
     
     # Admin Configuration
     ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-
-WEB_SERVER_URL=http://your-domain.com:8000  # Or your server IP
+    
+    # Web Server Configuration
+    WEB_SERVER_URL = os.environ.get("WEB_SERVER_URL", "http://localhost:8000")
 
 # Create config instance
 config = Config()
